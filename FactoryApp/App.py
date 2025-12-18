@@ -17,7 +17,6 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
     
-    # Workers Table (Postgres uses SERIAL instead of AUTOINCREMENT)
     c.execute('''CREATE TABLE IF NOT EXISTS workers
                  (id SERIAL PRIMARY KEY, 
                   name TEXT, 
@@ -25,7 +24,6 @@ def init_db():
                   photo_filename TEXT,
                   daily_rate INTEGER DEFAULT 0)''')
     
-    # Attendance Table
     c.execute('''CREATE TABLE IF NOT EXISTS attendance
                  (date TEXT, 
                   worker_id INTEGER, 
@@ -33,7 +31,6 @@ def init_db():
                   bundles_made INTEGER DEFAULT 0,
                   UNIQUE(date, worker_id))''') 
     
-    # Stock Tables
     c.execute('''CREATE TABLE IF NOT EXISTS stock
                  (id SERIAL PRIMARY KEY, date TEXT, item_name TEXT, quantity INTEGER, notes TEXT)''')
 
@@ -91,6 +88,7 @@ if menu == "🏠 Dashboard":
     conn = get_connection()
     current_month_str = datetime.now().strftime("%Y-%m")
     
+    # Updated queries to handle potential None types safely
     df_bundles = pd.read_sql(f"SELECT SUM(bundles_made) as total FROM attendance WHERE date LIKE '{current_month_str}%'", conn)
     total_bundles = df_bundles['total'].fillna(0).iloc[0]
     
@@ -346,13 +344,20 @@ elif menu == "Worker Reports":
     with tab1:
         st.subheader(f"Payroll for {sel_month} {sel_year}")
         conn = get_connection()
+        
+        # --- FIXED QUERY: USING DOUBLE QUOTES TO KEEP CAPITAL LETTERS ---
         query_payroll = f'''
-        SELECT w.name as Name, w.daily_rate as Rate,
-        COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) as Days_Worked,
-        SUM(CASE WHEN a.date LIKE '{filter_date}%' THEN a.bundles_made ELSE 0 END) as Total_Bundles,
-        (COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) * w.daily_rate) as Total_Salary
-        FROM workers w LEFT JOIN attendance a ON w.id = a.worker_id GROUP BY w.id
+        SELECT 
+            w.name as "Name", 
+            w.daily_rate as "Rate",
+            COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) as "Days_Worked",
+            SUM(CASE WHEN a.date LIKE '{filter_date}%' THEN a.bundles_made ELSE 0 END) as "Total_Bundles",
+            (COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) * w.daily_rate) as "Total_Salary"
+        FROM workers w 
+        LEFT JOIN attendance a ON w.id = a.worker_id 
+        GROUP BY w.id
         '''
+        
         df_payroll = pd.read_sql(query_payroll, conn)
         conn.close()
         st.dataframe(df_payroll, use_container_width=True)
