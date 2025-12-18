@@ -58,9 +58,6 @@ def init_db():
 init_db()
 
 # --- 2. HELPER FUNCTIONS ---
-# Note: On Cloud, images are still temporary unless you use an external storage (like S3).
-# For now, this will work for the session, but photos might reset. 
-# Fixing database data is the priority first.
 def save_uploaded_file(uploaded_file, name):
     if not os.path.exists("images"):
         os.makedirs("images")
@@ -105,9 +102,6 @@ if menu == "🏠 Dashboard":
     
     conn = get_connection()
     current_month_str = datetime.now().strftime("%Y-%m")
-    
-    # Postgres uses %s for replacement, but pandas read_sql handles it differently.
-    # We use simple f-strings here for read operations which is okay for dates.
     
     df_bundles = pd.read_sql(f"SELECT SUM(bundles_made) as total FROM attendance WHERE date LIKE '{current_month_str}%'", conn)
     total_bundles = df_bundles['total'].fillna(0).iloc[0]
@@ -156,7 +150,7 @@ elif menu == "🛠 Tools: Edit/Delete":
         row_id = st.number_input("Enter ID to Delete", min_value=0, step=1)
         if st.button("Delete Stock Entry"):
             c = conn.cursor()
-            c.execute("DELETE FROM stock WHERE id=%s", (row_id,)) # Note: %s for Postgres
+            c.execute("DELETE FROM stock WHERE id=%s", (row_id,))
             conn.commit()
             st.success(f"Deleted ID {row_id}")
             st.rerun()
@@ -220,7 +214,6 @@ elif menu == "Manage Workers":
                     
                     conn = get_connection()
                     c = conn.cursor()
-                    # POSTGRES SYNTAX: %s instead of ?
                     c.execute("INSERT INTO workers (name, designation, photo_filename, daily_rate) VALUES (%s, %s, %s, %s)", 
                               (new_name, new_desig, final_photo_name, new_rate))
                     conn.commit()
@@ -285,7 +278,6 @@ elif menu == "Take Attendance":
                 c = conn.cursor()
                 for worker_id, status in attendance_data.items():
                     b_qty = bundle_data[worker_id] if status == 'Present' else 0
-                    # POSTGRES UPSERT SYNTAX
                     query = """
                     INSERT INTO attendance (date, worker_id, status, bundles_made) 
                     VALUES (%s, %s, %s, %s)
