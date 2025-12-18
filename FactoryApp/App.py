@@ -1,21 +1,37 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import psycopg2
 import os
 from datetime import datetime
 from fpdf import FPDF
 
-# --- 1. DATABASE SETUP ---
+# --- 0. PAGE CONFIG & STYLING ---
+st.set_page_config(page_title="Factory Manager", layout="wide", page_icon="🏭")
+
+st.markdown("""
+    <style>
+    .stApp { background-color: #F0F2F6; }
+    [data-testid="stSidebar"] { background-color: #1E1E1E; }
+    [data-testid="stSidebar"] * { color: #FFFFFF !important; }
+    h1, h2, h3 { color: #2E7D32; font-family: 'Arial Black', sans-serif; }
+    .stButton>button { background-color: #2E7D32; color: white; border-radius: 8px; font-weight: bold; }
+    div[data-testid="metric-container"] { background-color: white; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
+    th { background-color: #2E7D32 !important; color: white !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 1. DATABASE SETUP (CLOUD VERSION) ---
+def get_connection():
+    # Connect using Streamlit Secrets
+    return psycopg2.connect(st.secrets["connections"]["postgresql"]["url"])
+
 def init_db():
-    if not os.path.exists("images"):
-        os.makedirs("images")
-        
-    conn = sqlite3.connect('factory_data.db')
+    conn = get_connection()
     c = conn.cursor()
     
-    # Workers Table
+    # Workers Table (Postgres uses SERIAL instead of AUTOINCREMENT)
     c.execute('''CREATE TABLE IF NOT EXISTS workers
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                 (id SERIAL PRIMARY KEY, 
                   name TEXT, 
                   designation TEXT, 
                   photo_filename TEXT,
@@ -31,10 +47,10 @@ def init_db():
     
     # Stock Tables
     c.execute('''CREATE TABLE IF NOT EXISTS stock
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, item_name TEXT, quantity INTEGER, notes TEXT)''')
+                 (id SERIAL PRIMARY KEY, date TEXT, item_name TEXT, quantity INTEGER, notes TEXT)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS sold_stock
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, item_name TEXT, quantity INTEGER, buyer_notes TEXT)''')
+                 (id SERIAL PRIMARY KEY, date TEXT, item_name TEXT, quantity INTEGER, buyer_notes TEXT)''')
     
     conn.commit()
     conn.close()
@@ -42,10 +58,12 @@ def init_db():
 init_db()
 
 # --- 2. HELPER FUNCTIONS ---
-def get_connection():
-    return sqlite3.connect('factory_data.db')
-
+# Note: On Cloud, images are still temporary unless you use an external storage (like S3).
+# For now, this will work for the session, but photos might reset. 
+# Fixing database data is the priority first.
 def save_uploaded_file(uploaded_file, name):
+    if not os.path.exists("images"):
+        os.makedirs("images")
     file_extension = uploaded_file.name.split('.')[-1] if hasattr(uploaded_file, 'name') else "jpg"
     unique_filename = f"{name.replace(' ', '_')}_{int(datetime.now().timestamp())}.{file_extension}"
     file_path = os.path.join("images", unique_filename)
@@ -74,28 +92,22 @@ def create_pdf(dataframe, title):
     return pdf.output(dest='S').encode('latin-1', 'ignore')
 
 # --- 3. MAIN APPLICATION UI ---
-st.set_page_config(page_title="Factory Manager", layout="wide")
-st.title("🏭 Tobacco Factory Management System")
+st.title("🏭 Tobacco Factory Manager (Cloud)")
 
 # --- SIDEBAR ---
 st.sidebar.title("Navigation")
 menu = st.sidebar.radio("Go to:", 
     ["🏠 Dashboard", "Take Attendance", "Manage Stock (In)", "Sold Stock (Out)", "Worker Reports", "Manage Workers", "🛠 Tools: Edit/Delete"])
 
-st.sidebar.divider()
-st.sidebar.subheader("💾 System Backup")
-if os.path.exists("factory_data.db"):
-    with open("factory_data.db", "rb") as f:
-        st.sidebar.download_button("Download Database Backup", f, "factory_backup.db", "application/octet-stream")
-
 # --- PAGE: DASHBOARD (HOME) ---
 if menu == "🏠 Dashboard":
     st.header("📈 Factory Overview")
     
     conn = get_connection()
-    
-    # 1. METRICS (Current Month)
     current_month_str = datetime.now().strftime("%Y-%m")
+    
+    # Postgres uses %s for replacement, but pandas read_sql handles it differently.
+    # We use simple f-strings here for read operations which is okay for dates.
     
     df_bundles = pd.read_sql(f"SELECT SUM(bundles_made) as total FROM attendance WHERE date LIKE '{current_month_str}%'", conn)
     total_bundles = df_bundles['total'].fillna(0).iloc[0]
@@ -107,114 +119,72 @@ if menu == "🏠 Dashboard":
     total_sales = df_sales['total'].fillna(0).iloc[0]
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("📦 Production (This Month)", f"{int(total_bundles)} Bundles")
-    col2.metric("⬇️ Stock Received", f"{int(total_stock)} Units")
-    col3.metric("⬆️ Stock Sold", f"{int(total_sales)} Units")
+    col1.metric("📦 Production (Month)", f"{int(total_bundles)} Bundles")
+    col2.metric("⬇️ Stock In", f"{int(total_stock)} Units")
+    col3.metric("⬆️ Sales", f"{int(total_sales)} Units")
     
     st.divider()
 
-    # 2. AVAILABLE STOCK (NEW FEATURE)
     st.subheader("🏭 Current Stock Availability")
-    
-    # Get Total Incoming per Item
     df_in = pd.read_sql("SELECT item_name, SUM(quantity) as total_in FROM stock GROUP BY item_name", conn)
-    
-    # Get Total Sold per Item
     df_out = pd.read_sql("SELECT item_name, SUM(quantity) as total_out FROM sold_stock GROUP BY item_name", conn)
     
     if not df_in.empty:
-        # Merge the two tables on 'item_name'
         df_inventory = pd.merge(df_in, df_out, on="item_name", how="left").fillna(0)
-        
-        # Calculate Remaining Balance
         df_inventory['Available_Stock'] = df_inventory['total_in'] - df_inventory['total_out']
-        
-        # Clean up the table for display
         df_display = df_inventory[['item_name', 'Available_Stock', 'total_in', 'total_out']]
         df_display.columns = ['Item Name', '✅ Available Balance', 'Total In', 'Total Sold']
-        
-        # Show colorful table
-        st.dataframe(df_display.style.background_gradient(subset=['✅ Available Balance'], cmap="Greens"), use_container_width=True)
+        try:
+            st.dataframe(df_display.style.background_gradient(subset=['✅ Available Balance'], cmap="Greens"), use_container_width=True)
+        except:
+            st.dataframe(df_display, use_container_width=True)
     else:
         st.info("No stock data available yet.")
-
-    st.divider()
-    
-    # 3. CHARTS
-    colA, colB = st.columns(2)
-    
-    with colA:
-        st.subheader("Daily Production Trend")
-        query_trend = f'''
-        SELECT date, SUM(bundles_made) as Bundles 
-        FROM attendance 
-        WHERE date LIKE '{current_month_str}%' 
-        GROUP BY date 
-        ORDER BY date
-        '''
-        df_trend = pd.read_sql(query_trend, conn)
-        if not df_trend.empty:
-            df_trend.set_index('date', inplace=True)
-            st.bar_chart(df_trend)
-        else:
-            st.info("No production data yet for this month.")
-            
-    with colB:
-        st.subheader("Recent Sales")
-        df_recent_sales = pd.read_sql("SELECT date, item_name, quantity FROM sold_stock ORDER BY date DESC LIMIT 5", conn)
-        st.dataframe(df_recent_sales, hide_index=True, use_container_width=True)
 
     conn.close()
 
 # --- PAGE: TOOLS (EDIT/DELETE) ---
 elif menu == "🛠 Tools: Edit/Delete":
     st.header("🛠 Edit & Delete Data")
-    st.warning("⚠️ Be careful! Deleting data here is permanent.")
-    
     tool_choice = st.selectbox("Select Data to Manage", ["Incoming Stock", "Sold Stock", "Workers"])
-    
     conn = get_connection()
     
     if tool_choice == "Incoming Stock":
         st.subheader("Manage Incoming Stock")
         df = pd.read_sql("SELECT * FROM stock ORDER BY date DESC", conn)
         st.dataframe(df)
-        
         row_id = st.number_input("Enter ID to Delete", min_value=0, step=1)
         if st.button("Delete Stock Entry"):
             c = conn.cursor()
-            c.execute("DELETE FROM stock WHERE id=?", (row_id,))
+            c.execute("DELETE FROM stock WHERE id=%s", (row_id,)) # Note: %s for Postgres
             conn.commit()
-            st.success(f"Stock Entry ID {row_id} Deleted!")
+            st.success(f"Deleted ID {row_id}")
             st.rerun()
 
     elif tool_choice == "Sold Stock":
         st.subheader("Manage Sold Stock")
         df = pd.read_sql("SELECT * FROM sold_stock ORDER BY date DESC", conn)
         st.dataframe(df)
-        
         row_id = st.number_input("Enter ID to Delete", min_value=0, step=1)
         if st.button("Delete Sale Entry"):
             c = conn.cursor()
-            c.execute("DELETE FROM sold_stock WHERE id=?", (row_id,))
+            c.execute("DELETE FROM sold_stock WHERE id=%s", (row_id,))
             conn.commit()
-            st.success(f"Sale Entry ID {row_id} Deleted!")
+            st.success(f"Deleted ID {row_id}")
             st.rerun()
             
     elif tool_choice == "Workers":
         st.subheader("Manage Workers")
         df = pd.read_sql("SELECT * FROM workers", conn)
         st.dataframe(df)
-        
         row_id = st.number_input("Enter ID to Delete", min_value=0, step=1)
         if st.button("Delete Worker"):
             c = conn.cursor()
-            c.execute("DELETE FROM attendance WHERE worker_id=?", (row_id,))
-            c.execute("DELETE FROM workers WHERE id=?", (row_id,))
+            c.execute("DELETE FROM attendance WHERE worker_id=%s", (row_id,))
+            c.execute("DELETE FROM workers WHERE id=%s", (row_id,))
             conn.commit()
-            st.success(f"Worker ID {row_id} and their history deleted!")
+            st.success(f"Worker {row_id} Deleted")
             st.rerun()
-            
     conn.close()
 
 # --- PAGE: MANAGE WORKERS ---
@@ -230,7 +200,7 @@ elif menu == "Manage Workers":
             with col2:
                 new_rate = st.number_input("Daily Wage (₹)", min_value=0, value=500)
             
-            st.write(" **Worker Photo:**")
+            st.write("Worker Photo (Note: Photos may reset on Cloud free tier)")
             col_cam, col_upl = st.columns(2)
             with col_cam:
                 camera_photo = st.camera_input("Take Photo")
@@ -250,11 +220,12 @@ elif menu == "Manage Workers":
                     
                     conn = get_connection()
                     c = conn.cursor()
-                    c.execute("INSERT INTO workers (name, designation, photo_filename, daily_rate) VALUES (?, ?, ?, ?)", 
+                    # POSTGRES SYNTAX: %s instead of ?
+                    c.execute("INSERT INTO workers (name, designation, photo_filename, daily_rate) VALUES (%s, %s, %s, %s)", 
                               (new_name, new_desig, final_photo_name, new_rate))
                     conn.commit()
                     conn.close()
-                    st.success(f"Worker {new_name} added with rate ₹{new_rate}!")
+                    st.success(f"Worker {new_name} added!")
 
     st.divider()
     st.subheader("Current Workers List")
@@ -279,9 +250,7 @@ elif menu == "Manage Workers":
 # --- PAGE: TAKE ATTENDANCE ---
 elif menu == "Take Attendance":
     st.header("📅 Daily Attendance & Production")
-    st.info("💡 To Edit: Just select the date, enter correct values, and click Save. It will overwrite old data.")
     att_date = st.date_input("Select Date", datetime.now())
-    
     conn = get_connection()
     workers = pd.read_sql("SELECT * FROM workers", conn)
     conn.close()
@@ -293,7 +262,6 @@ elif menu == "Take Attendance":
             st.write(f"Marking attendance for: **{att_date}**")
             attendance_data = {}
             bundle_data = {}
-            
             for index, row in workers.iterrows():
                 col1, col2, col3, col4 = st.columns([1, 2, 1, 2])
                 with col1:
@@ -311,18 +279,23 @@ elif menu == "Take Attendance":
                     bundle_data[row['id']] = b_count
                 st.divider()
 
-            submit_att = st.form_submit_button("Save Attendance & Production")
+            submit_att = st.form_submit_button("Save Attendance")
             if submit_att:
                 conn = get_connection()
                 c = conn.cursor()
                 for worker_id, status in attendance_data.items():
                     b_qty = bundle_data[worker_id] if status == 'Present' else 0
-                    c.execute('''INSERT OR REPLACE INTO attendance 
-                                 (date, worker_id, status, bundles_made) VALUES (?, ?, ?, ?)''',
-                              (att_date, worker_id, status, b_qty))
+                    # POSTGRES UPSERT SYNTAX
+                    query = """
+                    INSERT INTO attendance (date, worker_id, status, bundles_made) 
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (date, worker_id) 
+                    DO UPDATE SET status = EXCLUDED.status, bundles_made = EXCLUDED.bundles_made;
+                    """
+                    c.execute(query, (str(att_date), worker_id, status, b_qty))
                 conn.commit()
                 conn.close()
-                st.success("Attendance & Production Data Saved!")
+                st.success("Saved!")
 
 # --- PAGE: MANAGE STOCK (IN) ---
 elif menu == "Manage Stock (In)":
@@ -337,8 +310,8 @@ elif menu == "Manage Stock (In)":
         if st.button("Add Incoming Stock"):
             conn = get_connection()
             c = conn.cursor()
-            c.execute("INSERT INTO stock (date, item_name, quantity, notes) VALUES (?, ?, ?, ?)",
-                      (stock_date, item_name, qty, notes))
+            c.execute("INSERT INTO stock (date, item_name, quantity, notes) VALUES (%s, %s, %s, %s)",
+                      (str(stock_date), item_name, qty, notes))
             conn.commit()
             conn.close()
             st.success("Stock Added!")
@@ -362,8 +335,8 @@ elif menu == "Sold Stock (Out)":
         if st.button("Record Sale"):
             conn = get_connection()
             c = conn.cursor()
-            c.execute("INSERT INTO sold_stock (date, item_name, quantity, buyer_notes) VALUES (?, ?, ?, ?)",
-                      (sale_date, sale_item, sale_qty, buyer_notes))
+            c.execute("INSERT INTO sold_stock (date, item_name, quantity, buyer_notes) VALUES (%s, %s, %s, %s)",
+                      (str(sale_date), sale_item, sale_qty, buyer_notes))
             conn.commit()
             conn.close()
             st.success("Sale Recorded!")
@@ -377,12 +350,10 @@ elif menu == "Sold Stock (Out)":
 # --- PAGE: REPORTS ---
 elif menu == "Worker Reports":
     st.header("📊 Factory Reports")
-    
     tab1, tab2, tab3 = st.tabs(["💰 Payroll & Production", "📆 Daily View", "📦 Stock Reports"])
     
     current_year = datetime.now().year
     current_month_index = datetime.now().month - 1
-    
     c1, c2 = st.columns(2)
     with c1:
         year_list = [2024, 2025, 2026, 2027]
@@ -392,7 +363,6 @@ elif menu == "Worker Reports":
         month_list = ["01-Jan", "02-Feb", "03-Mar", "04-Apr", "05-May", "06-Jun", 
                       "07-Jul", "08-Aug", "09-Sep", "10-Oct", "11-Nov", "12-Dec"]
         sel_month = st.selectbox("Select Month", month_list, index=current_month_index, key="rep_month")
-    
     month_num = sel_month.split("-")[0]
     filter_date = f"{sel_year}-{month_num}"
 
@@ -400,15 +370,11 @@ elif menu == "Worker Reports":
         st.subheader(f"Payroll for {sel_month} {sel_year}")
         conn = get_connection()
         query_payroll = f'''
-        SELECT 
-            w.name as Name, 
-            w.daily_rate as Rate,
-            COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) as Days_Worked,
-            SUM(CASE WHEN a.date LIKE '{filter_date}%' THEN a.bundles_made ELSE 0 END) as Total_Bundles,
-            (COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) * w.daily_rate) as Total_Salary
-        FROM workers w
-        LEFT JOIN attendance a ON w.id = a.worker_id
-        GROUP BY w.id
+        SELECT w.name as Name, w.daily_rate as Rate,
+        COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) as Days_Worked,
+        SUM(CASE WHEN a.date LIKE '{filter_date}%' THEN a.bundles_made ELSE 0 END) as Total_Bundles,
+        (COUNT(CASE WHEN a.status = 'Present' AND a.date LIKE '{filter_date}%' THEN 1 END) * w.daily_rate) as Total_Salary
+        FROM workers w LEFT JOIN attendance a ON w.id = a.worker_id GROUP BY w.id
         '''
         df_payroll = pd.read_sql(query_payroll, conn)
         conn.close()
@@ -422,10 +388,7 @@ elif menu == "Worker Reports":
         st.subheader("Daily Status")
         view_date = st.date_input("Select Date", datetime.now(), key="dv_date")
         conn = get_connection()
-        query_daily = f'''
-        SELECT w.name, COALESCE(a.status, 'Not Marked') as Status, COALESCE(a.bundles_made, 0) as Bundles
-        FROM workers w LEFT JOIN attendance a ON w.id = a.worker_id AND a.date = '{view_date}'
-        '''
+        query_daily = f"SELECT w.name, COALESCE(a.status, 'Not Marked') as Status, COALESCE(a.bundles_made, 0) as Bundles FROM workers w LEFT JOIN attendance a ON w.id = a.worker_id AND a.date = '{view_date}'"
         df_daily = pd.read_sql(query_daily, conn)
         conn.close()
         def color_status(val):
