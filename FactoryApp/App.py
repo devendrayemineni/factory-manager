@@ -5,20 +5,8 @@ import os
 from datetime import datetime
 from fpdf import FPDF
 
-# --- 0. PAGE CONFIG & STYLING ---
-st.set_page_config(page_title="Factory Manager", layout="wide", page_icon="🏭")
-
-st.markdown("""
-    <style>
-    .stApp { background-color: #F0F2F6; }
-    [data-testid="stSidebar"] { background-color: #1E1E1E; }
-    [data-testid="stSidebar"] * { color: #FFFFFF !important; }
-    h1, h2, h3 { color: #2E7D32; font-family: 'Arial Black', sans-serif; }
-    .stButton>button { background-color: #2E7D32; color: white; border-radius: 8px; font-weight: bold; }
-    div[data-testid="metric-container"] { background-color: white; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
-    th { background-color: #2E7D32 !important; color: white !important; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- 0. PAGE CONFIG ---
+st.set_page_config(page_title="Factory Manager", layout="wide")
 
 # --- 1. DATABASE SETUP (CLOUD VERSION) ---
 def get_connection():
@@ -127,11 +115,8 @@ if menu == "🏠 Dashboard":
         df_inventory = pd.merge(df_in, df_out, on="item_name", how="left").fillna(0)
         df_inventory['Available_Stock'] = df_inventory['total_in'] - df_inventory['total_out']
         df_display = df_inventory[['item_name', 'Available_Stock', 'total_in', 'total_out']]
-        df_display.columns = ['Item Name', '✅ Available Balance', 'Total In', 'Total Sold']
-        try:
-            st.dataframe(df_display.style.background_gradient(subset=['✅ Available Balance'], cmap="Greens"), use_container_width=True)
-        except:
-            st.dataframe(df_display, use_container_width=True)
+        df_display.columns = ['Item Name', 'Available Balance', 'Total In', 'Total Sold']
+        st.dataframe(df_display, use_container_width=True)
     else:
         st.info("No stock data available yet.")
 
