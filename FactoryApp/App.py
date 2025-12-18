@@ -345,7 +345,7 @@ elif menu == "Worker Reports":
         st.subheader(f"Payroll for {sel_month} {sel_year}")
         conn = get_connection()
         
-        # --- FIXED QUERY: USING DOUBLE QUOTES TO KEEP CAPITAL LETTERS ---
+        # --- FIXED QUERY: USING DOUBLE QUOTES ---
         query_payroll = f'''
         SELECT 
             w.name as "Name", 
@@ -370,11 +370,22 @@ elif menu == "Worker Reports":
         st.subheader("Daily Status")
         view_date = st.date_input("Select Date", datetime.now(), key="dv_date")
         conn = get_connection()
-        query_daily = f"SELECT w.name, COALESCE(a.status, 'Not Marked') as Status, COALESCE(a.bundles_made, 0) as Bundles FROM workers w LEFT JOIN attendance a ON w.id = a.worker_id AND a.date = '{view_date}'"
+        # --- FIXED QUERY: ADDED DOUBLE QUOTES TO "Status" and "Bundles" ---
+        query_daily = f'''
+        SELECT 
+            w.name as "Name", 
+            COALESCE(a.status, 'Not Marked') as "Status", 
+            COALESCE(a.bundles_made, 0) as "Bundles" 
+        FROM workers w 
+        LEFT JOIN attendance a ON w.id = a.worker_id AND a.date = '{view_date}'
+        '''
         df_daily = pd.read_sql(query_daily, conn)
         conn.close()
+        
         def color_status(val):
             return f'color: {"green" if val == "Present" else "red"}'
+        
+        # Now "Status" exists with a capital S, so this won't crash
         st.dataframe(df_daily.style.applymap(color_status, subset=['Status']), use_container_width=True)
 
     with tab3:
